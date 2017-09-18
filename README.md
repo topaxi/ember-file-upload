@@ -16,6 +16,7 @@ exposes a variety of parameters for configuring file-uploader:
 |---------------------|------------------|
 | `accept`            | a list of MIME types / extensions to accept by the input
 | `multiple`          | whether multiple files can be selected
+| `disabled`          | if set, disables input and prevents files from being added to the queue
 | `onfileadd`         | the name of the action to be called when a file is added to a queue
 
 The `{{file-dropzone}}` component:
@@ -39,7 +40,8 @@ This configuration is for the uploader instance as a whole. Most of the configur
 | `data`              | multipart params to send along with the upload
 | `fileKey`           | the name of the parameter to send the file as. defaults to `file`
 
-The function signature of `upload` is `upload(url, [settings])`, or `upload(settings)`.
+
+The function signature of `upload` is `upload(url, [settings])`, or `upload(settings)`. If you want to send your file to your server unencoded (as a binary file), you can do so using `uploadBinary`. This will transmit the content using `application/octet-stream` instead of `multipart/form-data`.
 
 ## Recipes
 
@@ -87,14 +89,14 @@ const { get, set } = Ember;
 export default Ember.Route.extend({
 
   uploadPhoto: task(function * (file) {
+    let product = this.modelFor('product');
+    let photo = this.store.createRecord('photo', {
+      product,
+      filename: get(file, 'name'),
+      filesize: get(file, 'size')
+    });
+    
     try {
-      let product = this.modelFor('product');
-      let photo = this.store.createRecord('photo', {
-        product,
-        filename: get(file, 'name'),
-        filesize: get(file, 'size')
-      });
-
       file.readAsDataURL().then(function (url) {
         if (get(photo, 'url') == null) {
           set(photo, 'url', url);
@@ -104,7 +106,7 @@ export default Ember.Route.extend({
       let response = yield file.upload('/api/images/upload');
       set(photo, 'url', response.headers.Location);
       yield photo.save();
-    } catch {
+    } catch (e) {
       photo.rollback();
     }
   }).maxConcurrency(3).enqueue(),
@@ -119,9 +121,9 @@ export default Ember.Route.extend({
 
 ## Access to the global list of uploading files
 
-`ember-file-upload` exposes a service called `uploader` that exposes aggregate information on files being uploaded in your app.
+`ember-file-upload` exposes a service called `fileQueue` that exposes aggregate information on files being uploaded in your app.
 
-A common scenario is to alert users that they still have pending uploads when they are about to leave the page. To do this, look at `uploader.get('files.length')` to see if there's any files uploading.
+A common scenario is to alert users that they still have pending uploads when they are about to leave the page. To do this, look at `fileQueue.get('files.length')` to see if there's any files uploading.
 
 In addition to the file list, there are properties that indicate how many bytes have been uploaded (`loaded`), the total size of all files in bytes (`size`), and the progress of all files (`progress`). Using these, you may implement a global progress bar indicating files that are uploading in the background.
 

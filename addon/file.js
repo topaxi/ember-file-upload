@@ -50,6 +50,61 @@ function normalizeOptions(file, url, options) {
   return options;
 }
 
+function upload(file, url, opts, uploadFn) {
+  if (['queued', 'failed', 'timed_out'].indexOf(get(file, 'state')) === -1) {
+    Ember.assert(`The file ${file.id} is in the state "${get(file, 'state')}" and cannot be requeued.`);
+  }
+
+  let options = normalizeOptions(file, url, opts);
+
+  let request = new HTTPRequest({
+    withCredentials: options.withCredentials,
+    label: `${options.method} ${get(file, 'name') } to ${options.url}`
+  });
+
+  request.open(options.method, options.url);
+
+  Object.keys(options.headers).forEach(function (key) {
+    request.setRequestHeader(key, options.headers[key]);
+  });
+
+  if (options.timeout) {
+    request.timeout = options.timeout;
+  }
+
+  request.onprogress = function (evt) {
+    if (evt.lengthComputable) {
+      set(file, 'loaded', evt.loaded);
+      set(file, 'size', evt.total);
+      set(file, 'progress', (evt.loaded / evt.total) * 100);
+    }
+  };
+
+  request.ontimeout = function () {
+    set(file, 'state', 'timed_out');
+  };
+
+  request.onabort = function () {
+    set(file, 'state', 'aborted');
+  };
+
+  set(file, 'state', 'uploading');
+
+  // Increment for Ember.Test
+  inflightRequests++;
+
+  return uploadFn(request, options).then(function (result) {
+    set(file, 'state', 'uploaded');
+    return result;
+  }, function (error) {
+    set(file, 'state', 'failed');
+    return RSVP.reject(error);
+  }).finally(function () {
+    // Decrement for Ember.Test
+    inflightRequests--;
+  });
+}
+
 let inflightRequests = 0;
 if (Ember.Test) {
   Ember.Test.registerWaiter(null, function () {
@@ -57,6 +112,13 @@ if (Ember.Test) {
   });
 }
 
+/**
+  Files provide a uniform interface for interacting
+  with data that can be uploaded or read.
+
+  @class File
+  @extends Ember.Object
+ */
 export default Ember.Object.extend({
 
   init() {
@@ -200,68 +262,27 @@ export default Ember.Object.extend({
    */
   source: '',
 
+  uploadBinary(url, opts) {
+    opts.contentType = 'application/octet-stream';
+    return upload(this, url, opts, (request) => {
+      return request.send(get(this, 'blob'));
+    });
+  },
+
   upload(url, opts) {
-    if (['queued', 'failed', 'timed_out'].indexOf(get(this, 'state')) === -1) {
-      Ember.assert(`The file ${this.id} is in the state "${get(this, 'state')}" and cannot be requeued.`);
-    }
+    return upload(this, url, opts, (request, options) => {
+      // Build the form
+      let form = new FormData();
 
-    let options = normalizeOptions(this, url, opts);
+      Object.keys(options.data).forEach((key) => {
+        if (key === options.fileKey) {
+          form.append(key, options.data[key], get(this, 'name'));
+        } else {
+          form.append(key, options.data[key]);
+        }
+      });
 
-    // Build the form
-    let form = new FormData();
-
-    Object.keys(options.data).forEach((key) => {
-      if (key === options.fileKey) {
-        form.append(key, options.data[key], get(this, 'name'));
-      } else {
-        form.append(key, options.data[key]);
-      }
-    });
-
-    let request = new HTTPRequest({
-      withCredentials: options.withCredentials,
-      label: `${options.method} ${get(this, 'name') } to ${options.url}`
-    });
-    request.open(options.method, options.url);
-
-    Object.keys(options.headers).forEach(function (key) {
-      request.setRequestHeader(key, options.headers[key]);
-    });
-
-    if (options.timeout) {
-      request.timeout = options.timeout;
-    }
-
-    request.onprogress = (evt) => {
-      if (evt.lengthComputable) {
-        set(this, 'loaded', evt.loaded);
-        set(this, 'size', evt.total);
-        set(this, 'progress', (evt.loaded / evt.total) * 100);
-      }
-    };
-
-    request.ontimeout = () => {
-      set(this, 'state', 'timed_out');
-    };
-
-    request.onabort = () => {
-      set(this, 'state', 'aborted');
-    };
-
-    set(this, 'state', 'uploading');
-
-    // Increment for Ember.Test
-    inflightRequests++;
-
-    return request.send(form).then((result) => {
-      set(this, 'state', 'uploaded');
-      return result;
-    }, (error) => {
-      set(this, 'state', 'failed');
-      return RSVP.reject(error);
-    }, `ember-file-upload: Update "${get(this, 'name')}"'s upload state`).finally(function () {
-      // Decrement for Ember.Test
-      inflightRequests--;
+      return request.send(form);
     });
   },
 
@@ -291,6 +312,7 @@ export default Ember.Object.extend({
     Creates a file object that can be read or uploaded to a
     server from a Blob object.
 
+    @static
     @method fromBlob
     @param {Blob} blob The blob to create the file from.
     @param {String} [source] The source that created the blob.
@@ -315,6 +337,7 @@ export default Ember.Object.extend({
     Creates a file object that can be read or uploaded to a
     server from a data URL.
 
+    @static
     @method fromDataURL
     @param {String} dataURL The data URL to create the file from.
     @param {String} [source] The source of the data URL.
